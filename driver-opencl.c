@@ -43,7 +43,7 @@ extern void enable_curses(void);
 
 extern int mining_threads;
 extern double total_secs;
-extern int opt_g_threads;
+extern int gpu_threads;
 extern bool opt_loginput;
 extern char *opt_kernel_path;
 extern int gpur_thr_id;
@@ -241,6 +241,35 @@ char *set_kernel(char *arg)
 	if (device == 1) {
 		for (i = device; i < MAX_GPUDEVICES; i++)
 			gpus[i].kernel = gpus[0].kernel;
+	}
+
+	return NULL;
+}
+
+char *set_gpu_threads(char *arg)
+{
+	int i, val = 0, device = 0;
+	char *nextptr;
+
+	nextptr = strtok(arg, ",");
+	if (nextptr == NULL)
+		return "Invalid parameters for set gpu threads";
+	val = atoi(nextptr);
+	if (val < 1 || val > 10)
+		return "Invalid value passed to set_gpu_threads";
+
+	gpus[device++].threads = val;
+
+	while ((nextptr = strtok(NULL, ",")) != NULL) {
+		val = atoi(nextptr);
+		if (val < 1 || val > 10)
+			return "Invalid value passed to set_gpu_threads";
+
+		gpus[device++].threads = val;
+	}
+	if (device == 1) {
+		for (i = device; i < MAX_GPUDEVICES; i++)
+			gpus[i].threads = gpus[0].threads;
 	}
 
 	return NULL;
@@ -625,7 +654,7 @@ void manage_gpu(void)
 	char checkin[40];
 	char input;
 
-	if (!opt_g_threads)
+	if (!gpu_threads)
 		return;
 
 	opt_loginput = true;
@@ -1230,6 +1259,7 @@ void *reinit_gpu(__maybe_unused void *userdata)
 static void opencl_detect(bool hotplug)
 {
 	int i;
+	int g_threads;
 
 	if (opt_nogpu || hotplug)
 		return;
@@ -1244,12 +1274,10 @@ static void opencl_detect(bool hotplug)
 
 	/* If opt_g_threads is not set, use default 1 thread on scrypt and
 	 * 2 for regular mining */
-	if (opt_g_threads == -1) {
-		if (opt_scrypt)
-			opt_g_threads = 1;
-		else
-			opt_g_threads = 2;
-	}
+	if (opt_scrypt)
+		g_threads = 1;
+	else
+		g_threads = 2;
 
 	if (opt_scrypt)
 		opencl_drv.max_diff = 65536;
@@ -1261,7 +1289,9 @@ static void opencl_detect(bool hotplug)
 		cgpu->deven = DEV_ENABLED;
 		cgpu->drv = &opencl_drv;
 		cgpu->device_id = i;
-		cgpu->threads = opt_g_threads;
+		if (cgpu->threads == 0) {
+			cgpu->threads = g_threads;
+		}
 		cgpu->virtual_gpu = i;
 		add_cgpu(cgpu);
 	}
