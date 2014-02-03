@@ -2347,12 +2347,36 @@ static int attr_bad = A_BOLD;
 } while (0)
 
 /* Must be called with curses mutex lock held and curses_active */
+static void curses_print_uptime(void)
+{
+	struct timeval now, tv;
+	unsigned int days, hours;
+	div_t d;
+
+	cgtime(&now);
+	timersub(&now, &total_tv_start, &tv);
+	d = div(tv.tv_sec, 86400);
+	days = d.quot;
+	d = div(d.rem, 3600);
+	hours = d.quot;
+	d = div(d.rem, 60);
+	cg_wprintw(statuswin, " - [%u day%c %02d:%02d:%02d]"
+		, days
+		, (days == 1) ? ' ' : 's'
+		, hours
+		, d.quot
+		, d.rem
+	);
+}
+
 static void curses_print_status(void)
 {
 	struct pool *pool = current_pool();
 
 	wattron(statuswin, A_BOLD);
 	cg_mvwprintw(statuswin, 0, 0, " " PACKAGE " version " VERSION " - Started: %s", datestamp);
+	curses_print_uptime();
+	wclrtoeol(statuswin);
 	wattroff(statuswin, A_BOLD);
 
 	wattron(statuswin, menu_attr);
