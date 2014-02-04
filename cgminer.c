@@ -118,7 +118,6 @@ int nDevs;
 #endif
 #ifdef HAVE_OPENCL
 int opt_dynamic_interval = 7;
-int opt_g_threads = -1;
 int gpu_threads;
 #ifdef USE_SCRYPT
 bool opt_scrypt;
@@ -1175,8 +1174,8 @@ static struct opt_table opt_config_table[] = {
 		     set_int_0_to_9999, opt_show_intval, &opt_platform_id,
 		     "Select OpenCL platform ID to use for GPU mining"),
 	OPT_WITH_ARG("--gpu-threads|-g",
-		     set_int_1_to_10, opt_show_intval, &opt_g_threads,
-		     "Number of threads per GPU (1 - 10)"),
+		     set_gpu_threads, NULL, NULL,
+		     "Set the GPU threads (1 - 10) - one value for all or separate by commas for per card"),
 #ifdef HAVE_ADL
 	OPT_WITH_ARG("--gpu-engine",
 		     set_gpu_engine, NULL, NULL,
@@ -4496,6 +4495,9 @@ void write_config(FILE *fcfg)
 			fprintf(fcfg, "%s%d", i > 0 ? "," : "",
 				(int)gpus[i].shaders);
 #endif
+		fputs("\",\n\"gpu-threads\" : \"", fcfg);
+		for(i = 0; i < nDevs; i++)
+			fprintf(fcfg, "%s%d", i > 0 ? "," : "", gpus[i].threads);
 #ifdef HAVE_ADL
 		fputs("\",\n\"gpu-engine\" : \"", fcfg);
 		for(i = 0; i < nDevs; i++)
