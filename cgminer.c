@@ -2346,6 +2346,18 @@ static int attr_bad = A_BOLD;
 	wprintw(win, "%s", tmp42); \
 } while (0)
 
+static void adj_width(int var, int *length)
+{
+	if ((int)(log10(var) + 1) > *length)
+		(*length)++;
+}
+
+static void adj_fwidth(float var, int *length)
+{
+	if ((int)(log10(var) + 1) > *length)
+		(*length)++;
+}
+
 /* Must be called with curses mutex lock held and curses_active */
 static void curses_print_uptime(void)
 {
@@ -2368,6 +2380,35 @@ static void curses_print_uptime(void)
 		, d.rem
 	);
 }
+
+static void curses_print_poolstats(void)
+{
+	int i;
+	struct pool *pool;
+	char poolstats[4][40];
+	static int d_width = 1, a_width = 1, r_width = 1, dc_width = 1;
+
+	for (i = 0; i < 4; i++) { 
+		if (total_pools > i) {
+			pool = pools[i];
+			adj_fwidth(pool->last_block_diff, &d_width);
+			adj_width(pool->accepted, &a_width);
+			adj_width(pool->rejected, &r_width);
+			adj_width(pool->disconnect_occasions, &dc_width);
+			sprintf(poolstats[i], "%-14s D:%-*.0f A:%-*d R:%-*d DC:%-*d",
+				pool->poolname,
+				d_width, pool->last_block_diff,
+				a_width, pool->accepted,
+				r_width, pool->rejected,
+				dc_width, pool->disconnect_occasions
+			); 
+		} else {
+		  poolstats[i][0] = '\0';
+		}
+	}
+	cg_mvwprintw(statuswin, 4, 0, " %-37s | %-37s", poolstats[0], poolstats[1]);
+	cg_mvwprintw(statuswin, 5, 0, " %-37s | %-37s", poolstats[2], poolstats[3]);
+ }
 
 static void curses_print_status(void)
 {
@@ -2394,37 +2435,25 @@ static void curses_print_status(void)
 	wclrtoeol(statuswin);
 
 	if (shared_strategy() && total_pools > 1) {
-		cg_mvwprintw(statuswin, 4, 0, " Connected to multiple pools with%s block change notify",
-			have_longpoll ? "": "out");
-	} else if (pool->has_stratum) {
-		cg_mvwprintw(statuswin, 4, 0, " Connected to %s diff %s with stratum as user %s",
-			pool->sockaddr_url, pool->diff, pool->rpc_user);
+		curses_print_poolstats();
 	} else {
-		cg_mvwprintw(statuswin, 4, 0, " Connected to %s diff %s with%s %s as user %s",
-			pool->sockaddr_url, pool->diff, have_longpoll ? "": "out",
-			pool->has_gbt ? "GBT" : "LP", pool->rpc_user);
+		if (pool->has_stratum) {
+			cg_mvwprintw(statuswin, 4, 0, " Connected to %s diff %s with stratum as user %s",
+				pool->sockaddr_url, pool->diff, pool->rpc_user);
+		} else {
+			cg_mvwprintw(statuswin, 4, 0, " Connected to %s diff %s with%s %s as user %s",
+				pool->sockaddr_url, pool->diff, have_longpoll ? "": "out",
+				pool->has_gbt ? "GBT" : "LP", pool->rpc_user);
+		}
+		cg_mvwprintw(statuswin, 5, 0, " Block: %s...  Diff:%s  Started: %s  Best share: %s   ",
+			prev_block, block_diff, blocktime, best_share);
+		wclrtoeol(statuswin);
 	}
-	wclrtoeol(statuswin);
-
-	cg_mvwprintw(statuswin, 5, 0, " Block: %s...  Diff:%s  Started: %s  Best share: %s   ",
-		     prev_block, block_diff, blocktime, best_share);
 	wclrtoeol(statuswin);
 
 	mvwhline(statuswin, 6, 0, '-', 80);
 	if (!opt_compact)
 		mvwhline(statuswin, statusy - 1, 0, '-', 80);
-}
-
-static void adj_width(int var, int *length)
-{
-	if ((int)(log10(var) + 1) > *length)
-		(*length)++;
-}
-
-static void adj_fwidth(float var, int *length)
-{
-	if ((int)(log10(var) + 1) > *length)
-		(*length)++;
 }
 
 static int dev_width;
@@ -4208,6 +4237,7 @@ static void set_blockdiff(const struct work *work)
 	double ddiff = numerator / (double)diff32;
 
 	if (unlikely(current_diff != ddiff)) {
+		work->pool->last_block_diff = ddiff;
 		suffix_string(ddiff, block_diff, sizeof(block_diff), 0);
 		current_diff = ddiff;
 		applog(LOG_NOTICE, "Network diff set to %s", block_diff);
@@ -4795,12 +4825,14 @@ void zero_stats(void)
 		pool->discarded_work = 0;
 		pool->getfail_occasions = 0;
 		pool->remotefail_occasions = 0;
+		pool->disconnect_occasions = 0;
 		pool->last_share_time = 0;
 		pool->diff1 = 0;
 		pool->diff_accepted = 0;
 		pool->diff_rejected = 0;
 		pool->diff_stale = 0;
 		pool->last_share_diff = 0;
+		pool->last_block_diff = 0;
 	}
 
 	zero_bestshare();
@@ -5654,6 +5686,7 @@ static void *stratum_rthread(void *userdata)
 		if (!s) {
 			applog(LOG_NOTICE, "Stratum connection to %s interrupted", pool->poolname);
 			pool->getfail_occasions++;
+			pool->disconnect_occasions++;
 			total_go++;
 
 			/* If the socket to our stratum pool disconnects, all
