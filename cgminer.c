@@ -4560,9 +4560,6 @@ void write_config(FILE *fcfg)
 		fputs("\",\n\"lookup-gap\" : \"", fcfg);
 		for(i = 0; i < nDevs; i++)
 			fprintf(fcfg, "%s%d", i > 0 ? "," : "", (int)gpus[i].opt_lg);
-		fputs("\",\n\"gpu-threads\" : \"", fcfg);
-		for(i = 0; i < nDevs; i++)
-			fprintf(fcfg, "%s%d", i > 0 ? "," : "", gpus[i].threads, gpus[i].threads);
 		fputs("\",\n\"thread-concurrency\" : \"", fcfg);
 		for(i = 0; i < nDevs; i++)
 			fprintf(fcfg, "%s%d", i > 0 ? "," : "", (int)gpus[i].opt_tc);
