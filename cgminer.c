@@ -2528,7 +2528,7 @@ static void curses_print_devstatus(struct cgpu_info *cgpu, int count)
 			displayed_hashes,
 			dawidth, cgpu->diff_accepted,
 			drwidth, cgpu->diff_rejected,
-			drfwidth, reject_pct,
+			drfwidth + 2, reject_pct,
 			hwwidth, cgpu->hw_errors,
 			wuwidth + 2, wu);
 
