@@ -2532,9 +2532,11 @@ static void curses_print_devstatus(struct cgpu_info *cgpu, int count)
 			hwwidth, cgpu->hw_errors,
 			wuwidth + 2, wu);
 
+/*
 	logline[0] = '\0';
 	cgpu->drv->get_statline(logline, sizeof(logline), cgpu);
 	cg_wprintw(statuswin, "%s", logline);
+*/
 
 	wclrtoeol(statuswin);
 }
