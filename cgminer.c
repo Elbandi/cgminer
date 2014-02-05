@@ -2524,7 +2524,7 @@ static void curses_print_devstatus(struct cgpu_info *cgpu, int count)
 	adj_width(cgpu->hw_errors, &hwwidth);
 	adj_width(wu, &wuwidth);
 
-	cg_wprintw(statuswin, "/%6sh/s | A:%*.0f R:%*.0f (%*.1f%%) HW:%*d WU:%*.1f/m",
+	cg_wprintw(statuswin, "/%6s | A:%*.0f R:%*.0f (%*.1f%%) HW:%*d WU:%*.1f/m",
 			displayed_hashes,
 			dawidth, cgpu->diff_accepted,
 			drwidth, cgpu->diff_rejected,
@@ -5393,7 +5393,7 @@ static void hashmeter(int thr_id, struct timeval *diff,
 		reject_pct = (total_diff_rejected / (total_diff_accepted + total_diff_rejected)) * 100;
 
 	snprintf(statusline, sizeof(statusline),
-		"%s(%ds):%s (avg):%sh/s | A:%.0f  R:%.0f (%.1f%%) HW:%d  WU:%.1f/m  WUE:%.1f%%",
+		"%s(%ds):%s (avg):%s | A:%.0f R:%.0f (%.1f%%) HW:%d WU:%.1f/m WUE:%.1f%%",
 		want_per_device_stats ? "ALL " : "",
 		opt_log_interval, displayed_rolling, displayed_hashes,
 		total_diff_accepted, total_diff_rejected, reject_pct, hw_errors,
