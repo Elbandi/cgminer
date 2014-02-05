@@ -5388,11 +5388,15 @@ static void hashmeter(int thr_id, struct timeval *diff,
 	suffix_string(dh64, displayed_hashes, sizeof(displayed_hashes), 4);
 	suffix_string(dr64, displayed_rolling, sizeof(displayed_rolling), 4);
 
+	float reject_pct = 0.0;
+	if ((total_diff_accepted + total_diff_rejected) > 0)
+		reject_pct = (total_diff_rejected / (total_diff_accepted + total_diff_rejected)) * 100;
+
 	snprintf(statusline, sizeof(statusline),
-		"%s(%ds):%s (avg):%sh/s | A:%.0f  R:%.0f  HW:%d  WU:%.1f/m  WUE:%.1f%%",
+		"%s(%ds):%s (avg):%sh/s | A:%.0f  R:%.0f (%.1f%%) HW:%d  WU:%.1f/m  WUE:%.1f%%",
 		want_per_device_stats ? "ALL " : "",
 		opt_log_interval, displayed_rolling, displayed_hashes,
-		total_diff_accepted, total_diff_rejected, hw_errors,
+		total_diff_accepted, total_diff_rejected, reject_pct, hw_errors,
 		total_diff1 / total_secs * 60,
 		(total_diff1 / total_secs * 60)/(total_mhashes_done / total_secs * 100) * 10);
 
