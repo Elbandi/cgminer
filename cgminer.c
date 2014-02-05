@@ -146,6 +146,7 @@ bool use_curses;
 static bool opt_submit_stale = true;
 static int opt_shares;
 bool opt_fail_only;
+int opt_fail_switch_delay = 60;
 static bool opt_fix_protocol;
 static bool opt_lowmem;
 bool opt_autofan;
@@ -267,13 +268,20 @@ static struct pool *currentpool = NULL;
 int total_pools, enabled_pools;
 enum pool_strategy pool_strategy = POOL_FAILOVER;
 int opt_rotate_period;
-static int total_urls, total_users, total_passes, total_userpasses;
+static int total_urls, total_users, total_passes, total_userpasses, total_poolnames;
 
 static
 #ifndef HAVE_CURSES
 const
 #endif
 bool curses_active;
+
+#ifdef HAVE_CURSES
+#if !(defined(PDCURSES) || defined(NCURSES_VERSION))
+const
+#endif
+short default_bgcolor = COLOR_BLACK;
+#endif
 
 /* Protected by ch_lock */
 char current_hash[68];
@@ -564,6 +572,9 @@ struct pool *add_pool(void)
 	if (!pool)
 		quit(1, "Failed to malloc pool in add_pool");
 	pool->pool_no = pool->prio = total_pools;
+	char buf[32];
+	sprintf(buf, "Pool %d", pool->pool_no);
+	pool->poolname = strdup(buf);
 	pools = realloc(pools, sizeof(struct pool *) * (total_pools + 2));
 	pools[total_pools++] = pool;
 	mutex_init(&pool->pool_lock);
@@ -680,6 +691,25 @@ void get_intrange(char *arg, int *val1, int *val2)
 {
 	if (sscanf(arg, "%d-%d", val1, val2) == 1)
 		*val2 = *val1;
+}
+
+void get_intexitval(char *arg, int *val1, int *val2)
+{
+	if (sscanf(arg, "%d:%d", val1, val2) == 1)
+		*val2 = *val1;
+}
+
+void get_intrangeexitval(char *arg, int *val1, int *val2, int *val3)
+{
+	if (sscanf(arg, "%d:%d", val2, val3) == 2)
+	{
+		*val1 = *val2;
+	}
+	else if (sscanf(arg, "%d-%d:%d", val1, val2, val3) != 3)
+	{
+		get_intrange(arg, val1, val2);
+		*val3 = *val2;
+	}
 }
 
 static char *set_devices(char *arg)
@@ -803,6 +833,20 @@ static char *set_url(char *arg)
 	return NULL;
 }
 
+static char *set_poolname(char *arg)
+{
+	struct pool *pool;
+
+	total_poolnames++;
+	if (total_poolnames > total_pools)
+		add_pool();
+
+	pool = pools[total_poolnames - 1];
+	opt_set_charp(arg, &pool->poolname);
+
+	return NULL;
+}
+
 static char *set_quota(char *arg)
 {
 	char *semicolon = strchr(arg, ';'), *url;
@@ -826,7 +870,7 @@ static char *set_quota(char *arg)
 	pool = add_url();
 	setup_url(pool, url);
 	pool->quota = quota;
-	applog(LOG_INFO, "Setting pool %d to quota %d", pool->pool_no, pool->quota);
+	applog(LOG_INFO, "Setting %s to quota %d", pool->poolname, pool->quota);
 	adjust_quota_gcd();
 
 	return NULL;
@@ -1163,6 +1207,9 @@ static struct opt_table opt_config_table[] = {
 	OPT_WITHOUT_ARG("--failover-only",
 			opt_set_bool, &opt_fail_only,
 			"Don't leak work to backup pools when primary pool is lagging"),
+	OPT_WITH_ARG("--failover-switch-delay",
+			set_int_1_to_65535, opt_show_intval, &opt_fail_switch_delay,
+			"Delay in seconds before switching back to a failed pool"),
 	OPT_WITHOUT_ARG("--fix-protocol",
 			opt_set_bool, &opt_fix_protocol,
 			"Do not redirect to a different getwork protocol (eg. stratum)"),
@@ -1211,6 +1258,14 @@ static struct opt_table opt_config_table[] = {
 		     "Intensity of GPU scanning (d or " MIN_SHA_INTENSITY_STR
 		     " -> " MAX_SCRYPT_INTENSITY_STR
 		     ",default: d to maintain desktop interactivity)"),
+	OPT_WITH_ARG("--xintensity|-X",
+		     set_xintensity, NULL, NULL,
+		     "Shader based intensity of GPU scanning (" MIN_XINTENSITY_STR " to "
+			 MAX_XINTENSITY_STR "), overrides --intensity|-I and -rawintensity."),
+	OPT_WITH_ARG("--rawintensity",
+		     set_rawintensity, NULL, NULL,
+		     "Raw intensity of GPU scanning (" MIN_RAWINTENSITY_STR " to "
+			 MAX_RAWINTENSITY_STR "), overrides --intensity|-I and --xintensity|-X."),
 #else
 	OPT_WITH_ARG("--intensity|-I",
 		     set_intensity, NULL, NULL,
@@ -1285,6 +1340,9 @@ static struct opt_table opt_config_table[] = {
 	OPT_WITH_ARG("--log|-l",
 		     set_int_0_to_9999, opt_show_intval, &opt_log_interval,
 		     "Interval in seconds between log output"),
+	OPT_WITH_ARG("--log-dateformat",
+		     set_int_0_to_10, opt_show_intval, &opt_log_dateformat,
+		     "Set log dateformat (0 or 1) - 0 is time only, 1 is full date and time."),
 	OPT_WITHOUT_ARG("--lowmem",
 			opt_set_bool, &opt_lowmem,
 			"Minimise caching of shares for low memory applications"),
@@ -1324,6 +1382,9 @@ static struct opt_table opt_config_table[] = {
 	OPT_WITHOUT_ARG("--per-device-stats",
 			opt_set_bool, &want_per_device_stats,
 			"Force verbose mode and output per-device statistics"),
+	OPT_WITH_ARG("--poolname|--name",
+		     set_poolname, NULL, NULL,
+		     "Name of pool."),
 	OPT_WITHOUT_ARG("--protocol-dump|-P",
 			opt_set_bool, &opt_protocol,
 			"Verbose dump of protocol-level activities"),
@@ -1371,7 +1432,10 @@ static struct opt_table opt_config_table[] = {
 #ifdef USE_SCRYPT
 	OPT_WITHOUT_ARG("--scrypt",
 			opt_set_bool, &opt_scrypt,
-			"Use the scrypt algorithm for mining (litecoin only)"),
+			"Use the scrypt algorithm for mining"),
+	OPT_WITH_ARG("--cl-filename",
+		     set_cl_filename, NULL, NULL,
+		     "Sets the kernel .cl filename WITHOUT FILE EXTENSION - one value or comma separated list (e.g. scrypt130511_lantis,scrypt130511,scrypt130511_alexey)"),
 	OPT_WITH_ARG("--shaders",
 		     set_shaders, NULL, NULL,
 		     "GPU shaders per card for tuning scrypt, comma separated"),
@@ -1864,20 +1928,17 @@ static void update_gbt(struct pool *pool)
 		total_getworks++;
 		pool->getwork_requested++;
 		if (rc) {
-			applog(LOG_DEBUG, "Successfully retrieved and updated GBT from pool %u %s",
-			       pool->pool_no, pool->rpc_url);
+			applog(LOG_DEBUG, "Successfully retrieved and updated GBT from %s", pool->poolname);
 			cgtime(&pool->tv_idle);
 			if (pool == current_pool())
 				opt_work_update = true;
 		} else {
-			applog(LOG_DEBUG, "Successfully retrieved but FAILED to decipher GBT from pool %u %s",
-			       pool->pool_no, pool->rpc_url);
+			applog(LOG_DEBUG, "Successfully retrieved but FAILED to decipher GBT from %s", pool->poolname);
 		}
 		json_decref(val);
 		free_work(work);
 	} else {
-		applog(LOG_DEBUG, "FAILED to update GBT from pool %u %s",
-		       pool->pool_no, pool->rpc_url);
+		applog(LOG_DEBUG, "FAILED to update GBT from %s", pool->poolname);
 	}
 	curl_easy_cleanup(curl);
 }
@@ -2270,6 +2331,8 @@ static bool shared_strategy(void)
 }
 
 #ifdef HAVE_CURSES
+static int menu_attr = A_REVERSE;
+static int attr_bad = A_BOLD;
 #define CURBUFSIZ 256
 #define cg_mvwprintw(win, y, x, fmt, ...) do { \
 	char tmp42[CURBUFSIZ]; \
@@ -2281,41 +2344,6 @@ static bool shared_strategy(void)
 	snprintf(tmp42, sizeof(tmp42), fmt, ##__VA_ARGS__); \
 	wprintw(win, "%s", tmp42); \
 } while (0)
-
-/* Must be called with curses mutex lock held and curses_active */
-static void curses_print_status(void)
-{
-	struct pool *pool = current_pool();
-
-	wattron(statuswin, A_BOLD);
-	cg_mvwprintw(statuswin, 0, 0, " " PACKAGE " version " VERSION " - Started: %s", datestamp);
-	wattroff(statuswin, A_BOLD);
-	mvwhline(statuswin, 1, 0, '-', 80);
-	cg_mvwprintw(statuswin, 2, 0, " %s", statusline);
-	wclrtoeol(statuswin);
-	cg_mvwprintw(statuswin, 3, 0, " ST: %d  SS: %d  NB: %d  LW: %d  GF: %d  RF: %d",
-		total_staged(), total_stale, new_blocks,
-		local_work, total_go, total_ro);
-	wclrtoeol(statuswin);
-	if (shared_strategy() && total_pools > 1) {
-		cg_mvwprintw(statuswin, 4, 0, " Connected to multiple pools with%s block change notify",
-			have_longpoll ? "": "out");
-	} else if (pool->has_stratum) {
-		cg_mvwprintw(statuswin, 4, 0, " Connected to %s diff %s with stratum as user %s",
-			pool->sockaddr_url, pool->diff, pool->rpc_user);
-	} else {
-		cg_mvwprintw(statuswin, 4, 0, " Connected to %s diff %s with%s %s as user %s",
-			pool->sockaddr_url, pool->diff, have_longpoll ? "": "out",
-			pool->has_gbt ? "GBT" : "LP", pool->rpc_user);
-	}
-	wclrtoeol(statuswin);
-	cg_mvwprintw(statuswin, 5, 0, " Block: %s...  Diff:%s  Started: %s  Best share: %s   ",
-		     prev_block, block_diff, blocktime, best_share);
-	mvwhline(statuswin, 6, 0, '-', 80);
-	mvwhline(statuswin, statusy - 1, 0, '-', 80);
-	cg_mvwprintw(statuswin, devcursor - 1, 1, "[P]ool management %s[S]ettings [D]isplay options [Q]uit",
-		have_opencl ? "[G]PU management " : "");
-}
 
 static void adj_width(int var, int *length)
 {
@@ -2329,11 +2357,109 @@ static void adj_fwidth(float var, int *length)
 		(*length)++;
 }
 
+/* Must be called with curses mutex lock held and curses_active */
+static void curses_print_uptime(void)
+{
+	struct timeval now, tv;
+	unsigned int days, hours;
+	div_t d;
+
+	cgtime(&now);
+	timersub(&now, &total_tv_start, &tv);
+	d = div(tv.tv_sec, 86400);
+	days = d.quot;
+	d = div(d.rem, 3600);
+	hours = d.quot;
+	d = div(d.rem, 60);
+	cg_wprintw(statuswin, " - [%u day%c %02d:%02d:%02d]"
+		, days
+		, (days == 1) ? ' ' : 's'
+		, hours
+		, d.quot
+		, d.rem
+	);
+}
+
+static void curses_print_poolstats(void)
+{
+	int i;
+	struct pool *pool;
+	char poolstats[4][40];
+	static int d_width = 1, a_width = 1, r_width = 1, dc_width = 1;
+
+	for (i = 0; i < 4; i++) { 
+		if (total_pools > i) {
+			pool = pools[i];
+			adj_fwidth(pool->last_block_diff, &d_width);
+			adj_width(pool->accepted, &a_width);
+			adj_width(pool->rejected, &r_width);
+			adj_width(pool->disconnect_occasions, &dc_width);
+			sprintf(poolstats[i], "%-14s D:%-*.0f A:%-*d R:%-*d DC:%-*d",
+				pool->poolname,
+				d_width, pool->last_block_diff,
+				a_width, pool->accepted,
+				r_width, pool->rejected,
+				dc_width, pool->disconnect_occasions
+			); 
+		} else {
+		  poolstats[i][0] = '\0';
+		}
+	}
+	cg_mvwprintw(statuswin, 4, 0, " %-37s | %-37s", poolstats[0], poolstats[1]);
+	cg_mvwprintw(statuswin, 5, 0, " %-37s | %-37s", poolstats[2], poolstats[3]);
+ }
+
+static void curses_print_status(void)
+{
+	struct pool *pool = current_pool();
+
+	wattron(statuswin, A_BOLD);
+	cg_mvwprintw(statuswin, 0, 0, " " PACKAGE " version " VERSION " - Started: %s", datestamp);
+	curses_print_uptime();
+	wclrtoeol(statuswin);
+	wattroff(statuswin, A_BOLD);
+
+	wattron(statuswin, menu_attr);
+	cg_mvwprintw(statuswin, 1, 0, " [P]ool management %s[S]ettings [D]isplay options [Q]uit %s",
+		have_opencl ? "[G]PU management " : "",
+		have_opencl ? "        " : "                         ");
+	wattroff(statuswin, menu_attr);
+
+	cg_mvwprintw(statuswin, 2, 0, " %s", statusline);
+	wclrtoeol(statuswin);
+
+	cg_mvwprintw(statuswin, 3, 0, " ST: %d  SS: %d  NB: %d  LW: %d  GF: %d  RF: %d",
+		total_staged(), total_stale, new_blocks,
+		local_work, total_go, total_ro);
+	wclrtoeol(statuswin);
+
+	if (shared_strategy() && total_pools > 1) {
+		curses_print_poolstats();
+	} else {
+		if (pool->has_stratum) {
+			cg_mvwprintw(statuswin, 4, 0, " Connected to %s diff %s with stratum as user %s",
+				pool->sockaddr_url, pool->diff, pool->rpc_user);
+		} else {
+			cg_mvwprintw(statuswin, 4, 0, " Connected to %s diff %s with%s %s as user %s",
+				pool->sockaddr_url, pool->diff, have_longpoll ? "": "out",
+				pool->has_gbt ? "GBT" : "LP", pool->rpc_user);
+		}
+		cg_mvwprintw(statuswin, 5, 0, " Block: %s...  Diff:%s  Started: %s  Best share: %s   ",
+			prev_block, block_diff, blocktime, best_share);
+		wclrtoeol(statuswin);
+	}
+	wclrtoeol(statuswin);
+
+	mvwhline(statuswin, 6, 0, '-', 80);
+	if (!opt_compact)
+		mvwhline(statuswin, statusy - 1, 0, '-', 80);
+}
+
 static int dev_width;
 
 static void curses_print_devstatus(struct cgpu_info *cgpu, int count)
 {
-	static int dawidth = 1, drwidth = 1, hwwidth = 1, wuwidth = 1;
+	static int dawidth = 1, drwidth = 1, drfwidth = 1, hwwidth = 1, wuwidth = 1;
 	char logline[256];
 	char displayed_hashes[16], displayed_rolling[16];
 	uint64_t dh64, dr64;
@@ -2388,15 +2514,21 @@ static void curses_print_devstatus(struct cgpu_info *cgpu, int count)
 		cg_wprintw(statuswin, "REST  ");
 	else
 		cg_wprintw(statuswin, "%6s", displayed_rolling);
+
+	float reject_pct = 0.0;
+	if ((cgpu->diff_accepted + cgpu->diff_rejected) > 0)
+		reject_pct = (cgpu->diff_rejected / (cgpu->diff_accepted + cgpu->diff_rejected)) * 100;
 	adj_fwidth(cgpu->diff_accepted, &dawidth);
 	adj_fwidth(cgpu->diff_rejected, &drwidth);
+	adj_fwidth(reject_pct, &drfwidth);
 	adj_width(cgpu->hw_errors, &hwwidth);
 	adj_width(wu, &wuwidth);
 
-	cg_wprintw(statuswin, "/%6sh/s | A:%*.0f R:%*.0f HW:%*d WU:%*.1f/m",
+	cg_wprintw(statuswin, "/%6sh/s | A:%*.0f R:%*.0f (%*.1f%%) HW:%*d WU:%*.1f/m",
 			displayed_hashes,
 			dawidth, cgpu->diff_accepted,
 			drwidth, cgpu->diff_rejected,
+			drfwidth, reject_pct,
 			hwwidth, cgpu->hw_errors,
 			wuwidth + 2, wu);
 
@@ -2423,7 +2555,7 @@ static inline void change_logwinsize(void)
 			statusy = y - 2;
 		else
 			statusy = logstart;
-		logcursor = statusy + 1;
+		logcursor = statusy;
 		mvwin(logwin, logcursor, 0);
 		wresize(statuswin, statusy, x);
 	}
@@ -2448,7 +2580,7 @@ static void check_winsizes(void)
 			statusy = LINES - 2;
 		else
 			statusy = logstart;
-		logcursor = statusy + 1;
+		logcursor = statusy;
 		wresize(statuswin, statusy, x);
 		getmaxyx(mainwin, y, x);
 		y -= logcursor;
@@ -2469,11 +2601,11 @@ static void switch_logsize(bool __maybe_unused newdevs)
 			disable_curses_windows();
 #endif
 		if (opt_compact) {
-			logstart = devcursor + 1;
-			logcursor = logstart + 1;
+			logstart = devcursor;
+			logcursor = logstart;
 		} else {
-			logstart = devcursor + most_devices + 1;
-			logcursor = logstart + 1;
+			logstart = devcursor + most_devices;
+			logcursor = logstart;
 		}
 #ifdef WIN32
 		if (newdevs)
@@ -2600,10 +2732,10 @@ share_result(json_t *val, json_t *res, json_t *err, const struct work *work,
 		pool->last_share_diff = work->work_difficulty;
 		applog(LOG_DEBUG, "PROOF OF WORK RESULT: true (yay!!!)");
 		if (!QUIET) {
-			if (total_pools > 1)
-				applog(LOG_NOTICE, "Accepted %s %s %d pool %d %s%s",
-				       hashshow, cgpu->drv->name, cgpu->device_id, work->pool->pool_no, resubmit ? "(resubmit)" : "", worktime);
-			else
+			if (total_pools > 1) {
+				applog(LOG_NOTICE, "Accepted %s %s %d at %s %s%s",
+				       hashshow, cgpu->drv->name, cgpu->device_id, pool->poolname, resubmit ? "(resubmit)" : "", worktime);
+			} else
 				applog(LOG_NOTICE, "Accepted %s %s %d %s%s",
 				       hashshow, cgpu->drv->name, cgpu->device_id, resubmit ? "(resubmit)" : "", worktime);
 		}
@@ -2619,7 +2751,7 @@ share_result(json_t *val, json_t *res, json_t *err, const struct work *work,
 		 * This will only happen with the work returned from a
 		 * longpoll */
 		if (unlikely(pool->enabled == POOL_REJECTING)) {
-			applog(LOG_WARNING, "Rejecting pool %d now accepting shares, re-enabling!", pool->pool_no);
+			applog(LOG_WARNING, "Rejecting %s now accepting shares, re-enabling!", pool->poolname);
 			enable_pool(pool);
 			switch_pools(NULL);
 		}
@@ -2646,7 +2778,7 @@ share_result(json_t *val, json_t *res, json_t *err, const struct work *work,
 
 			strcpy(reason, "");
 			if (total_pools > 1)
-				snprintf(where, sizeof(where), "pool %d", work->pool->pool_no);
+				snprintf(where, sizeof(where), "%s", work->pool->poolname);
 			else
 				strcpy(where, "");
 
@@ -2688,8 +2820,8 @@ share_result(json_t *val, json_t *res, json_t *err, const struct work *work,
 			double utility = total_accepted / total_secs * 60;
 
 			if (pool->seq_rejects > utility * 3) {
-				applog(LOG_WARNING, "Pool %d rejected %d sequential shares, disabling!",
-				       pool->pool_no, pool->seq_rejects);
+				applog(LOG_WARNING, "%s rejected %d sequential shares, disabling!",
+				       pool->poolname, pool->seq_rejects);
 				reject_pool(pool);
 				if (pool == current_pool())
 					switch_pools(NULL);
@@ -2818,15 +2950,15 @@ static bool submit_upstream_work(struct work *work, CURL *curl, bool resubmit)
 			total_ro++;
 			pool->remotefail_occasions++;
 			if (opt_lowmem) {
-				applog(LOG_WARNING, "Pool %d communication failure, discarding shares", pool->pool_no);
+				applog(LOG_WARNING, "%s communication failure, discarding shares", pool->poolname);
 				goto out;
 			}
-			applog(LOG_WARNING, "Pool %d communication failure, caching submissions", pool->pool_no);
+			applog(LOG_WARNING, "%s communication failure, caching submissions", pool->poolname);
 		}
 		cgsleep_ms(5000);
 		goto out;
 	} else if (pool_tclear(pool, &pool->submit_fail))
-		applog(LOG_WARNING, "Pool %d communication resumed, submitting work", pool->pool_no);
+		applog(LOG_WARNING, "%s communication resumed, submitting work", pool->poolname);
 
 	res = json_object_get(val, "result");
 	err = json_object_get(val, "error");
@@ -3079,7 +3211,7 @@ static inline struct pool *select_pool(bool lagging)
 	if (!pool)
 		pool = cp;
 out:
-	applog(LOG_DEBUG, "Selecting pool %d for work", pool->pool_no);
+	applog(LOG_DEBUG, "Selecting %s for work", pool->poolname);
 	return pool;
 }
 
@@ -3414,7 +3546,7 @@ retry:
 	mutex_unlock(&pool->pool_lock);
 
 	if (recruited)
-		applog(LOG_DEBUG, "Recruited curl for pool %d", pool->pool_no);
+		applog(LOG_DEBUG, "Recruited curl for %s", pool->poolname);
 	return ce;
 }
 
@@ -3496,12 +3628,12 @@ static void *submit_work_thread(void *userdata)
 	/* submit solution to bitcoin via JSON-RPC */
 	while (!submit_upstream_work(work, ce->curl, resubmit)) {
 		if (opt_lowmem) {
-			applog(LOG_NOTICE, "Pool %d share being discarded to minimise memory cache", pool->pool_no);
+			applog(LOG_NOTICE, "%s share being discarded to minimise memory cache", pool->poolname);
 			break;
 		}
 		resubmit = true;
 		if (stale_work(work, true)) {
-			applog(LOG_NOTICE, "Pool %d share became stale while retrying submit, discarding", pool->pool_no);
+			applog(LOG_NOTICE, "%s share became stale while retrying submit, discarding", pool->poolname);
 
 			mutex_lock(&stats_lock);
 			total_stale++;
@@ -3681,10 +3813,10 @@ static void pool_died(struct pool *pool)
 	if (!pool_tset(pool, &pool->idle)) {
 		cgtime(&pool->tv_idle);
 		if (pool == current_pool()) {
-			applog(LOG_WARNING, "Pool %d %s not responding!", pool->pool_no, pool->rpc_url);
+			applog(LOG_WARNING, "%s not responding!", pool->poolname);
 			switch_pools(NULL);
 		} else
-			applog(LOG_INFO, "Pool %d %s failed to return work", pool->pool_no, pool->rpc_url);
+			applog(LOG_INFO, "%s failed to return work", pool->poolname);
 	}
 }
 
@@ -3912,7 +4044,7 @@ void switch_pools(struct pool *selected)
 		pool_tset(pool, &pool->lagging);
 
 	if (pool != last_pool && pool_strategy != POOL_LOADBALANCE && pool_strategy != POOL_BALANCE) {
-		applog(LOG_WARNING, "Switching to pool %d %s", pool->pool_no, pool->rpc_url);
+		applog(LOG_WARNING, "Switching to %s", pool->poolname);
 		if (pool_localgen(pool) || opt_fail_only)
 			clear_pool_work(last_pool);
 	}
@@ -4104,6 +4236,7 @@ static void set_blockdiff(const struct work *work)
 	double ddiff = numerator / (double)diff32;
 
 	if (unlikely(current_diff != ddiff)) {
+		work->pool->last_block_diff = ddiff;
 		suffix_string(ddiff, block_diff, sizeof(block_diff), 0);
 		current_diff = ddiff;
 		applog(LOG_NOTICE, "Network diff set to %s", block_diff);
@@ -4166,11 +4299,10 @@ static bool test_work_current(struct work *work)
 
 		if (work->longpoll) {
 			if (work->stratum) {
-				applog(LOG_NOTICE, "Stratum from pool %d detected new block",
-				       pool->pool_no);
+				applog(LOG_NOTICE, "Stratum from %s detected new block", pool->poolname);
 			} else {
-				applog(LOG_NOTICE, "%sLONGPOLL from pool %d detected new block",
-				       work->gbt ? "GBT " : "", work->pool->pool_no);
+				applog(LOG_NOTICE, "%sLONGPOLL from %s detected new block",
+				       work->gbt ? "GBT " : "", work->pool->poolname);
 			}
 		} else if (have_longpoll)
 			applog(LOG_NOTICE, "New block detected on network before longpoll");
@@ -4185,12 +4317,12 @@ static bool test_work_current(struct work *work)
 			 * block. */
 			if (memcmp(bedata, current_block, 32)) {
 				/* Doesn't match current block. It's stale */
-				applog(LOG_DEBUG, "Stale data from pool %d", pool->pool_no);
+				applog(LOG_DEBUG, "Stale data from %s", pool->poolname);
 				ret = false;
 			} else {
 				/* Work is from new block and pool is up now
 				 * current. */
-				applog(LOG_INFO, "Pool %d now up to date", pool->pool_no);
+				applog(LOG_INFO, "%s now up to date", pool->poolname);
 				memcpy(pool->prev_block, bedata, 32);
 			}
 		}
@@ -4199,17 +4331,15 @@ static bool test_work_current(struct work *work)
 		 * accepting shares from it. To maintain fair work distribution
 		 * we work on it anyway. */
 		if (memcmp(bedata, current_block, 32))
-			applog(LOG_DEBUG, "Pool %d still on old block", pool->pool_no);
+			applog(LOG_DEBUG, "%s still on old block", pool->poolname);
 #endif
 		if (work->longpoll) {
 			work->work_block = ++work_block;
 			if (shared_strategy() || work->pool == current_pool()) {
 				if (work->stratum) {
-					applog(LOG_NOTICE, "Stratum from pool %d requested work restart",
-					       pool->pool_no);
+					applog(LOG_NOTICE, "Stratum from %s requested work restart", pool->poolname);
 				} else {
-					applog(LOG_NOTICE, "%sLONGPOLL from pool %d requested work restart",
-					       work->gbt ? "GBT " : "", work->pool->pool_no);
+					applog(LOG_NOTICE, "%sLONGPOLL from %s requested work restart", work->gbt ? "GBT " : "", work->pool->poolname);
 				}
 				restart_threads();
 			}
@@ -4287,7 +4417,7 @@ static void *stage_thread(void *userdata)
 
 static void stage_work(struct work *work)
 {
-	applog(LOG_DEBUG, "Pushing work from pool %d to hash queue", work->pool->pool_no);
+	applog(LOG_DEBUG, "Pushing work from %s to hash queue", work->pool->poolname);
 	work->work_block = work_block;
 	test_work_current(work);
 	work->pool->works++;
@@ -4447,9 +4577,19 @@ void write_config(FILE *fcfg)
 #ifdef HAVE_OPENCL
 	if (nDevs) {
 		/* Write GPU device values */
-		fputs(",\n\"intensity\" : \"", fcfg);
-		for(i = 0; i < nDevs; i++)
-			fprintf(fcfg, gpus[i].dynamic ? "%sd" : "%s%d", i > 0 ? "," : "", gpus[i].intensity);
+		if ((nDevs > 0) && (gpus[0].intensity > 0)) {
+			fputs(",\n\"intensity\" : \"", fcfg);
+			for(i = 0; i < nDevs; i++)
+				fprintf(fcfg, gpus[i].dynamic ? "%sd" : "%s%d", i > 0 ? "," : "", gpus[i].intensity);
+		} else if ((nDevs > 0) && (gpus[0].xintensity > 0)) {
+			fputs(",\n\"xintensity\" : \"", fcfg);
+			for(i = 0; i < nDevs; i++)
+				fprintf(fcfg, "%s%d", i > 0 ? "," : "", gpus[i].xintensity);
+		} else if ((nDevs > 0) && (gpus[0].rawintensity > 0)) {
+			fputs(",\n\"rawintensity\" : \"", fcfg);
+			for(i = 0; i < nDevs; i++)
+				fprintf(fcfg, "%s%d", i > 0 ? "," : "", gpus[i].rawintensity);
+		};
 		fputs("\",\n\"vectors\" : \"", fcfg);
 		for(i = 0; i < nDevs; i++)
 			fprintf(fcfg, "%s%d", i > 0 ? "," : "",
@@ -4458,42 +4598,48 @@ void write_config(FILE *fcfg)
 		for(i = 0; i < nDevs; i++)
 			fprintf(fcfg, "%s%d", i > 0 ? "," : "",
 				(int)gpus[i].work_size);
-		fputs("\",\n\"kernel\" : \"", fcfg);
-		for(i = 0; i < nDevs; i++) {
-			fprintf(fcfg, "%s", i > 0 ? "," : "");
-			switch (gpus[i].kernel) {
-				case KL_NONE: // Shouldn't happen
-					break;
-				case KL_POCLBM:
-					fprintf(fcfg, "poclbm");
-					break;
-				case KL_PHATK:
-					fprintf(fcfg, "phatk");
-					break;
-				case KL_DIAKGCN:
-					fprintf(fcfg, "diakgcn");
-					break;
-				case KL_DIABLO:
-					fprintf(fcfg, "diablo");
-					break;
-				case KL_SCRYPT:
-					fprintf(fcfg, "scrypt");
-					break;
+		if (!opt_scrypt) {
+			fputs("\",\n\"kernel\" : \"", fcfg);
+			for(i = 0; i < nDevs; i++) {
+				fprintf(fcfg, "%s", i > 0 ? "," : "");
+				switch (gpus[i].kernel) {
+					case KL_NONE: // Shouldn't happen
+						break;
+					case KL_POCLBM:
+						fprintf(fcfg, "poclbm");
+						break;
+					case KL_PHATK:
+						fprintf(fcfg, "phatk");
+						break;
+					case KL_DIAKGCN:
+						fprintf(fcfg, "diakgcn");
+						break;
+					case KL_DIABLO:
+						fprintf(fcfg, "diablo");
+						break;
+					case KL_SCRYPT:
+						fprintf(fcfg, "scrypt");
+						break;
+				}
 			}
-		}
+		};
 #ifdef USE_SCRYPT
+		if ((nDevs > 0) && (gpus[0].cl_filename)) {
+			fputs("\",\n\"cl-filename\" : \"", fcfg);
+			for(i = 0; i < nDevs; i++)
+				fprintf(fcfg, "%s%s", i > 0 ? "," : "", gpus[i].cl_filename);
+		};
 		fputs("\",\n\"lookup-gap\" : \"", fcfg);
 		for(i = 0; i < nDevs; i++)
-			fprintf(fcfg, "%s%d", i > 0 ? "," : "",
-				(int)gpus[i].opt_lg);
+			fprintf(fcfg, "%s%d", i > 0 ? "," : "", (int)gpus[i].opt_lg);
 		fputs("\",\n\"thread-concurrency\" : \"", fcfg);
 		for(i = 0; i < nDevs; i++)
-			fprintf(fcfg, "%s%d", i > 0 ? "," : "",
-				(int)gpus[i].opt_tc);
-		fputs("\",\n\"shaders\" : \"", fcfg);
-		for(i = 0; i < nDevs; i++)
-			fprintf(fcfg, "%s%d", i > 0 ? "," : "",
-				(int)gpus[i].shaders);
+			fprintf(fcfg, "%s%d", i > 0 ? "," : "", (int)gpus[i].opt_tc);
+		if ((nDevs > 0) && (gpus[0].shaders > 0)) {
+			fputs("\",\n\"shaders\" : \"", fcfg);
+			for(i = 0; i < nDevs; i++)
+				fprintf(fcfg, "%s%d", i > 0 ? "," : "", (int)gpus[i].shaders);
+		}
 #endif
 		fputs("\",\n\"gpu-threads\" : \"", fcfg);
 		for(i = 0; i < nDevs; i++)
@@ -4501,13 +4647,15 @@ void write_config(FILE *fcfg)
 #ifdef HAVE_ADL
 		fputs("\",\n\"gpu-engine\" : \"", fcfg);
 		for(i = 0; i < nDevs; i++)
-			fprintf(fcfg, "%s%d-%d", i > 0 ? "," : "", gpus[i].min_engine, gpus[i].gpu_engine);
+			fprintf(fcfg, gpus[i].gpu_engine_exit != gpus[i].gpu_engine ? "%s%d-%d:%d" : "%s%d-%d",
+			i > 0 ? "," : "", gpus[i].min_engine, gpus[i].gpu_engine, gpus[i].gpu_engine_exit);
 		fputs("\",\n\"gpu-fan\" : \"", fcfg);
 		for(i = 0; i < nDevs; i++)
 			fprintf(fcfg, "%s%d-%d", i > 0 ? "," : "", gpus[i].min_fan, gpus[i].gpu_fan);
 		fputs("\",\n\"gpu-memclock\" : \"", fcfg);
 		for(i = 0; i < nDevs; i++)
-			fprintf(fcfg, "%s%d", i > 0 ? "," : "", gpus[i].gpu_memclock);
+			fprintf(fcfg, gpus[i].gpu_memclock_exit != gpus[i].gpu_memclock ? "%s%d:%d" : "%s%d",
+			i > 0 ? "," : "", gpus[i].gpu_memclock, gpus[i].gpu_memclock_exit);
 		fputs("\",\n\"gpu-memdiff\" : \"", fcfg);
 		for(i = 0; i < nDevs; i++)
 			fprintf(fcfg, "%s%d", i > 0 ? "," : "", gpus[i].gpu_memdiff);
@@ -4679,12 +4827,14 @@ void zero_stats(void)
 		pool->discarded_work = 0;
 		pool->getfail_occasions = 0;
 		pool->remotefail_occasions = 0;
+		pool->disconnect_occasions = 0;
 		pool->last_share_time = 0;
 		pool->diff1 = 0;
 		pool->diff_accepted = 0;
 		pool->diff_rejected = 0;
 		pool->diff_stale = 0;
 		pool->last_share_diff = 0;
+		pool->last_block_diff = 0;
 	}
 
 	zero_bestshare();
@@ -5225,7 +5375,7 @@ static void hashmeter(int thr_id, struct timeval *diff,
 
 	local_secs = (double)total_diff.tv_sec + ((double)total_diff.tv_usec / 1000000.0);
 	decay_time(&total_rolling, local_mhashes_done / local_secs, local_secs);
-	global_hashrate = llround(total_rolling) * 1000000;
+	global_hashrate = ((unsigned long long)lround(total_rolling)) * 1000000;
 
 	timersub(&total_tv_end, &total_tv_start, &total_diff);
 	total_secs = (double)total_diff.tv_sec +
@@ -5237,11 +5387,12 @@ static void hashmeter(int thr_id, struct timeval *diff,
 	suffix_string(dr64, displayed_rolling, sizeof(displayed_rolling), 4);
 
 	snprintf(statusline, sizeof(statusline),
-		"%s(%ds):%s (avg):%sh/s | A:%.0f  R:%.0f  HW:%d  WU:%.1f/m",
+		"%s(%ds):%s (avg):%sh/s | A:%.0f  R:%.0f  HW:%d  WU:%.1f/m  WUE:%.1f%%",
 		want_per_device_stats ? "ALL " : "",
 		opt_log_interval, displayed_rolling, displayed_hashes,
 		total_diff_accepted, total_diff_rejected, hw_errors,
-		total_diff1 / total_secs * 60);
+		total_diff1 / total_secs * 60,
+		(total_diff1 / total_secs * 60)/(total_mhashes_done / total_secs * 100) * 10);
 
 	local_mhashes_done = 0;
 out_unlock:
@@ -5321,7 +5472,7 @@ static bool parse_stratum_response(struct pool *pool, char *s)
 		cg_runlock(&pool->data_lock);
 
 		if (json_is_true(res_val)) {
-			applog(LOG_NOTICE, "Accepted untracked stratum share from pool %d", pool->pool_no);
+			applog(LOG_NOTICE, "Accepted untracked stratum share from %s", pool->poolname);
 
 			/* We don't know what device this came from so we can't
 			 * attribute the work to the relevant cgpu */
@@ -5332,7 +5483,7 @@ static bool parse_stratum_response(struct pool *pool, char *s)
 			pool->diff_accepted += pool_diff;
 			mutex_unlock(&stats_lock);
 		} else {
-			applog(LOG_NOTICE, "Rejected untracked stratum share from pool %d", pool->pool_no);
+			applog(LOG_NOTICE, "Rejected untracked stratum share from %s", pool->poolname);
 
 			mutex_lock(&stats_lock);
 			total_rejected++;
@@ -5375,7 +5526,7 @@ void clear_stratum_shares(struct pool *pool)
 	mutex_unlock(&sshare_lock);
 
 	if (cleared) {
-		applog(LOG_WARNING, "Lost %d shares due to stratum disconnect on pool %d", cleared, pool->pool_no);
+		applog(LOG_WARNING, "Lost %d shares due to stratum disconnect on %s", cleared, pool->poolname);
 		pool->stale_shares += cleared;
 		total_stale += cleared;
 		pool->diff_stale += diff_cleared;
@@ -5462,7 +5613,7 @@ static void stratum_resumed(struct pool *pool)
 	if (!pool->stratum_notify)
 		return;
 	if (pool_tclear(pool, &pool->idle)) {
-		applog(LOG_INFO, "Stratum connection to pool %d resumed", pool->pool_no);
+		applog(LOG_INFO, "Stratum connection to %s resumed", pool->poolname);
 		pool_resus(pool);
 	}
 }
@@ -5530,13 +5681,14 @@ static void *stratum_rthread(void *userdata)
 		 * assume the connection has been dropped and treat this pool
 		 * as dead */
 		if (!sock_full(pool) && (sel_ret = select(pool->sock + 1, &rd, NULL, NULL, &timeout)) < 1) {
-			applog(LOG_DEBUG, "Stratum select failed on pool %d with value %d", pool->pool_no, sel_ret);
+			applog(LOG_DEBUG, "Stratum select failed on %s with value %d", pool->poolname, sel_ret);
 			s = NULL;
 		} else
 			s = recv_line(pool);
 		if (!s) {
-			applog(LOG_NOTICE, "Stratum connection to pool %d interrupted", pool->pool_no);
+			applog(LOG_NOTICE, "Stratum connection to %s interrupted", pool->poolname);
 			pool->getfail_occasions++;
+			pool->disconnect_occasions++;
 			total_go++;
 
 			/* If the socket to our stratum pool disconnects, all
@@ -5620,8 +5772,7 @@ static void *stratum_sthread(void *userdata)
 			quit(1, "Stratum q returned empty work");
 
 		if (unlikely(work->nonce2_len > 8)) {
-			applog(LOG_ERR, "Pool %d asking for inappropriately long nonce2 length %d",
-			       pool->pool_no, (int)work->nonce2_len);
+			applog(LOG_ERR, "%s asking for inappropriately long nonce2 length %d", pool->poolname, (int)work->nonce2_len);
 			applog(LOG_ERR, "Not attempting to submit shares");
 			free_work(work);
 			continue;
@@ -5652,8 +5803,7 @@ static void *stratum_sthread(void *userdata)
 			"{\"params\": [\"%s\", \"%s\", \"%s\", \"%s\", \"%s\"], \"id\": %d, \"method\": \"mining.submit\"}",
 			pool->rpc_user, work->job_id, nonce2hex, work->ntime, noncehex, sshare->id);
 
-		applog(LOG_INFO, "Submitting share %08lx to pool %d",
-					(long unsigned int)htole32(hash32[6]), pool->pool_no);
+		applog(LOG_INFO, "Submitting share %08lx to %s", (long unsigned int)htole32(hash32[6]), pool->poolname);
 
 		/* Try resubmitting for up to 2 minutes if we fail to submit
 		 * once and the stratum pool nonce1 still matches suggesting
@@ -5663,7 +5813,7 @@ static void *stratum_sthread(void *userdata)
 
 			if (likely(stratum_send(pool, s, strlen(s)))) {
 				if (pool_tclear(pool, &pool->submit_fail))
-						applog(LOG_WARNING, "Pool %d communication resumed, submitting work", pool->pool_no);
+						applog(LOG_WARNING, "%s communication resumed, submitting work", pool->poolname);
 
 				mutex_lock(&sshare_lock);
 				HASH_ADD_INT(stratum_shares, id, sshare);
@@ -5675,7 +5825,7 @@ static void *stratum_sthread(void *userdata)
 				break;
 			}
 			if (!pool_tset(pool, &pool->submit_fail) && cnx_needed(pool)) {
-				applog(LOG_WARNING, "Pool %d stratum share submission failure", pool->pool_no);
+				applog(LOG_WARNING, "%s stratum share submission failure", pool->poolname);
 				total_ro++;
 				pool->remotefail_occasions++;
 			}
@@ -5727,7 +5877,7 @@ static void *longpoll_thread(void *userdata);
 
 static bool stratum_works(struct pool *pool)
 {
-	applog(LOG_INFO, "Testing pool %d stratum %s", pool->pool_no, pool->stratum_url);
+	applog(LOG_INFO, "Testing %s stratum %s", pool->poolname, pool->stratum_url);
 	if (!extract_sockaddr(pool->stratum_url, &pool->sockaddr_url, &pool->stratum_port))
 		return false;
 
@@ -5746,9 +5896,9 @@ static bool pool_active(struct pool *pool, bool pinging)
 	int uninitialised_var(rolltime);
 
 	if (pool->has_gbt)
-		applog(LOG_DEBUG, "Retrieving block template from pool %s", pool->rpc_url);
+		applog(LOG_DEBUG, "Retrieving block template from %s", pool->poolname);
 	else
-		applog(LOG_INFO, "Testing pool %s", pool->rpc_url);
+		applog(LOG_INFO, "Testing %s", pool->poolname);
 
 	/* This is the central point we activate stratum when we can */
 retry_stratum:
@@ -5832,7 +5982,7 @@ retry_stratum:
 	/* Detect if a http getwork pool has an X-Stratum header at startup,
 	 * and if so, switch to that in preference to getwork if it works */
 	if (pool->stratum_url && !opt_fix_protocol && stratum_works(pool)) {
-		applog(LOG_NOTICE, "Switching pool %d %s to %s", pool->pool_no, pool->rpc_url, pool->stratum_url);
+		applog(LOG_NOTICE, "Switching %s to %s", pool->poolname, pool->stratum_url);
 		if (!pool->rpc_url)
 			pool->rpc_url = strdup(pool->stratum_url);
 		pool->has_stratum = true;
@@ -5847,8 +5997,7 @@ retry_stratum:
 
 		rc = work_decode(pool, work, val);
 		if (rc) {
-			applog(LOG_DEBUG, "Successfully retrieved and deciphered work from pool %u %s",
-			       pool->pool_no, pool->rpc_url);
+			applog(LOG_DEBUG, "Successfully retrieved and deciphered work from %s", pool->poolname);
 			work->pool = pool;
 			work->rolltime = rolltime;
 			copy_time(&work->tv_getwork, &tv_getwork);
@@ -5863,8 +6012,7 @@ retry_stratum:
 			ret = true;
 			cgtime(&pool->tv_idle);
 		} else {
-			applog(LOG_DEBUG, "Successfully retrieved but FAILED to decipher work from pool %u %s",
-			       pool->pool_no, pool->rpc_url);
+			applog(LOG_DEBUG, "Successfully retrieved but FAILED to decipher work from %s", pool->poolname);
 			free_work(work);
 		}
 		json_decref(val);
@@ -5912,10 +6060,9 @@ retry_stratum:
 			pool->has_stratum = true;
 			goto retry_stratum;
 		}
-		applog(LOG_DEBUG, "FAILED to retrieve work from pool %u %s",
-		       pool->pool_no, pool->rpc_url);
+		applog(LOG_DEBUG, "FAILED to retrieve work from %s", pool->poolname);
 		if (!pinging)
-			applog(LOG_WARNING, "Pool %u slow/down or URL or credentials invalid", pool->pool_no);
+			applog(LOG_WARNING, "%s slow/down or URL or credentials invalid", pool->poolname);
 	}
 out:
 	curl_easy_cleanup(curl);
@@ -5925,15 +6072,15 @@ out:
 static void pool_resus(struct pool *pool)
 {
 	if (pool_strategy == POOL_FAILOVER && pool->prio < cp_prio())
-		applog(LOG_WARNING, "Pool %d %s alive, testing stability", pool->pool_no, pool->rpc_url);
+		applog(LOG_WARNING, "%s alive, testing stability", pool->poolname);
 	else
-		applog(LOG_INFO, "Pool %d %s alive", pool->pool_no, pool->rpc_url);
+		applog(LOG_INFO, "%s alive", pool->poolname);
 }
 
 static struct work *hash_pop(void)
 {
 	struct work *work = NULL, *tmp;
-	int hc;
+	int hc, i;
 
 	mutex_lock(stgd_lock);
 	while (!HASH_COUNT(staged_work)) {
@@ -5952,12 +6099,24 @@ static struct work *hash_pop(void)
 		if (rc && !no_work) {
 			no_work = true;
 			applog(LOG_WARNING, "Waiting for work to be available from pools.");
+#ifdef HAVE_ADL
+			// Set all GPUs to idle (same as exit and disabled) state.
+			applog(LOG_WARNING, "Setting GPUs to idle performance.");
+			for(i = 0; i < nDevs; i++)
+				adl_reset_device(i, true, false);
+#endif
+
 		}
 	}
 
 	if (no_work) {
 		applog(LOG_WARNING, "Work available from pools, resuming.");
 		no_work = false;
+#ifdef HAVE_ADL
+		applog(LOG_WARNING, "Setting GPUs back to maximum performance.");
+		for(i = 0; i < nDevs; i++)
+			adl_reset_device(i, false, false);
+#endif
 	}
 
 	hc = HASH_COUNT(staged_work);
@@ -6153,11 +6312,11 @@ static void submit_work_async(struct work *work)
 
 	if (stale_work(work, true)) {
 		if (opt_submit_stale)
-			applog(LOG_NOTICE, "Pool %d stale share detected, submitting as user requested", pool->pool_no);
+			applog(LOG_NOTICE, "%s stale share detected, submitting as user requested", pool->poolname);
 		else if (pool->submit_old)
-			applog(LOG_NOTICE, "Pool %d stale share detected, submitting as pool requested", pool->pool_no);
+			applog(LOG_NOTICE, "%s stale share detected, submitting as pool requested", pool->poolname);
 		else {
-			applog(LOG_NOTICE, "Pool %d stale share detected, discarding", pool->pool_no);
+			applog(LOG_NOTICE, "%s stale share detected, discarding", pool->poolname);
 			sharelog("discard", work);
 
 			mutex_lock(&stats_lock);
@@ -6174,7 +6333,7 @@ static void submit_work_async(struct work *work)
 	}
 
 	if (work->stratum) {
-		applog(LOG_DEBUG, "Pushing pool %d work to stratum queue", pool->pool_no);
+		applog(LOG_DEBUG, "Pushing %s work to stratum queue", pool->poolname);
 		if (unlikely(!tq_push(pool->stratum_q, work))) {
 			applog(LOG_DEBUG, "Discarding work from removed pool");
 			free_work(work);
@@ -6247,7 +6406,7 @@ static void update_work_stats(struct thr_info *thr, struct work *work)
 		work->pool->solved++;
 		found_blocks++;
 		work->mandatory = true;
-		applog(LOG_NOTICE, "Found block for pool %d!", work->pool->pool_no);
+		applog(LOG_NOTICE, "Found block for %s!", work->pool->poolname);
 	}
 
 	mutex_lock(&stats_lock);
@@ -7041,7 +7200,7 @@ static void reap_curl(struct pool *pool)
 	mutex_unlock(&pool->pool_lock);
 
 	if (reaped)
-		applog(LOG_DEBUG, "Reaped %d curl%s from pool %d", reaped, reaped > 1 ? "s" : "", pool->pool_no);
+		applog(LOG_DEBUG, "Reaped %d curl%s from %s", reaped, reaped > 1 ? "s" : "", pool->poolname);
 }
 
 static void *watchpool_thread(void __maybe_unused *userdata)
@@ -7093,12 +7252,11 @@ static void *watchpool_thread(void __maybe_unused *userdata)
 			}
 
 			/* Only switch pools if the failback pool has been
-			 * alive for more than 5 minutes to prevent
+			 * alive for more than 60 seconds (default) to prevent
 			 * intermittently failing pools from being used. */
 			if (!pool->idle && pool_strategy == POOL_FAILOVER && pool->prio < cp_prio() &&
-			    now.tv_sec - pool->tv_idle.tv_sec > 300) {
-				applog(LOG_WARNING, "Pool %d %s stable for 5 mins",
-				       pool->pool_no, pool->rpc_url);
+			    now.tv_sec - pool->tv_idle.tv_sec > opt_fail_switch_delay) {
+				applog(LOG_WARNING, "%s stable for %d seconds", pool->poolname, opt_fail_switch_delay);
 				switch_pools(NULL);
 			}
 		}
@@ -7474,7 +7632,7 @@ static void *test_pool_thread(void *arg)
 		cg_wunlock(&control_lock);
 
 		if (unlikely(first_pool))
-			applog(LOG_NOTICE, "Switching to pool %d %s - first alive pool", pool->pool_no, pool->rpc_url);
+			applog(LOG_NOTICE, "Switching to %s - first alive pool", pool->poolname);
 
 		pool_resus(pool);
 		switch_pools(NULL);
@@ -7660,6 +7818,17 @@ void enable_curses(void) {
 	}
 
 	mainwin = initscr();
+	start_color();
+#if defined(PDCURSES) || defined(NCURSES_VERSION)
+	if (ERR != use_default_colors())
+		default_bgcolor = -1;
+#endif
+	if (has_colors() && ERR != init_pair(1, COLOR_WHITE, COLOR_BLUE))
+	{
+		menu_attr = COLOR_PAIR(1);
+		if (ERR != init_pair(2, COLOR_RED, default_bgcolor))
+			attr_bad |= COLOR_PAIR(2);
+	}
 	enable_curses_windows();
 	curses_active = true;
 	statusy = logstart;
@@ -8083,9 +8252,9 @@ int main(int argc, char *argv[])
 	free(s);
 	strcat(cgminer_path, "/");
 
-	devcursor = 8;
+	devcursor = 7;
 	logstart = devcursor + 1;
-	logcursor = logstart + 1;
+	logcursor = logstart;
 
 	block = calloc(sizeof(struct block), 1);
 	if (unlikely(!block))
@@ -8255,6 +8424,13 @@ int main(int argc, char *argv[])
 #endif
 	}
 
+#ifdef USE_SCRYPT // I don't really know if this is relevant for other mining platforms
+	if (!getenv("GPU_MAX_ALLOC_PERCENT"))
+		applog(LOG_WARNING, "WARNING: GPU_MAX_ALLOC_PERCENT is not specified!");
+	if (!getenv("GPU_USE_SYNC_OBJECTS"))
+		applog(LOG_WARNING, "WARNING: GPU_USE_SYNC_OBJECTS is not specified!");
+#endif
+
 	if (!total_pools) {
 		applog(LOG_WARNING, "Need to specify at least one pool server.");
 #ifdef HAVE_CURSES
@@ -8272,7 +8448,7 @@ int main(int argc, char *argv[])
 
 		if (!pool->rpc_userpass) {
 			if (!pool->rpc_user || !pool->rpc_pass)
-				quit(1, "No login credentials supplied for pool %u %s", i, pool->rpc_url);
+				quit(1, "No login credentials supplied for %s", pool->poolname);
 			siz = strlen(pool->rpc_user) + strlen(pool->rpc_pass) + 2;
 			pool->rpc_userpass = malloc(siz);
 			if (!pool->rpc_userpass)
@@ -8508,7 +8684,7 @@ begin_bench:
 		work = make_work();
 
 		if (lagging && !pool_tset(cp, &cp->lagging)) {
-			applog(LOG_WARNING, "Pool %d not providing work fast enough", cp->pool_no);
+			applog(LOG_WARNING, "%s not providing work fast enough", cp->poolname);
 			cp->getfail_occasions++;
 			total_go++;
 		}
@@ -8566,7 +8742,7 @@ retry:
 		ce = pop_curl_entry(pool);
 		/* obtain new work from bitcoin via JSON-RPC */
 		if (!get_upstream_work(work, ce->curl)) {
-			applog(LOG_DEBUG, "Pool %d json_rpc_call failed on get work, retrying in 5s", pool->pool_no);
+			applog(LOG_DEBUG, "%s json_rpc_call failed on get work, retrying in 5s", pool->poolname);
 			/* Make sure the pool just hasn't stopped serving
 			 * requests but is up as we'll keep hammering it */
 			if (++pool->seq_getfails > mining_threads + opt_queue)

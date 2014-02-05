@@ -16,6 +16,8 @@ extern char *set_gpu_vddc(char *arg);
 extern char *set_temp_overheat(char *arg);
 extern char *set_temp_target(char *arg);
 extern char *set_intensity(char *arg);
+extern char *set_xintensity(char *arg);
+extern char *set_rawintensity(char *arg);
 extern char *set_vector(char *arg);
 extern char *set_worksize(char *arg);
 #ifdef USE_SCRYPT
@@ -25,6 +27,7 @@ extern char *set_thread_concurrency(char *arg);
 #endif
 extern char *set_kernel(char *arg);
 extern char *set_gpu_threads(char *arg);
+extern char *set_cl_filename(char *arg);
 void manage_gpu(void);
 extern void pause_dynamic_threads(int gpu);
 

@@ -1190,7 +1190,7 @@ static struct api_data *print_data(struct api_data *root, char *buf, bool isjson
 			case API_UTILITY:
 			case API_FREQ:
 			case API_MHS:
-				sprintf(buf, "%.2f", *((double *)(root->data)));
+				sprintf(buf, "%.4f", *((double *)(root->data)));
 				break;
 			case API_VOLTS:
 				sprintf(buf, "%.3f", *((float *)(root->data)));
@@ -2690,6 +2690,9 @@ static void gpuenable(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char
 				return;
 			}
 			gpus[id].deven = DEV_ENABLED;
+#ifdef HAVE_ADL
+			adl_reset_device(id, false, false);
+#endif
 			applog(LOG_DEBUG, "API Pushing sem post to thread %d", thr->id);
 			cgsem_post(&thr->sem);
 		}
@@ -2727,6 +2730,9 @@ static void gpudisable(struct io_data *io_data, __maybe_unused SOCKETTYPE c, cha
 	}
 
 	gpus[id].deven = DEV_DISABLED;
+#ifdef HAVE_ADL
+	adl_reset_device(id, true, false);
+#endif
 
 	message(io_data, MSG_GPUDIS, id, NULL, isjson);
 }

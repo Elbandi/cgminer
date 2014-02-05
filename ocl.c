@@ -370,6 +370,17 @@ _clState *initCl(unsigned int gpu, char *name, size_t nameSize)
 		return NULL;
 	}
 	applog(LOG_DEBUG, "Max work group size reported %d", (int)(clState->max_work_size));
+	
+	size_t compute_units = 0;
+	status = clGetDeviceInfo(devices[gpu], CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(size_t), (void *)&compute_units, NULL);
+	if (status != CL_SUCCESS) {
+		applog(LOG_ERR, "Error %d: Failed to clGetDeviceInfo when trying to get CL_DEVICE_MAX_COMPUTE_UNITS", status);
+		return NULL;
+	}
+	// AMD architechture got 64 compute shaders per compute unit.
+	// Source: http://www.amd.com/us/Documents/GCN_Architecture_whitepaper.pdf
+	clState->compute_shaders = compute_units * 64;
+	applog(LOG_DEBUG, "Max shaders calculated %d", (int)(clState->compute_shaders));
 
 	status = clGetDeviceInfo(devices[gpu], CL_DEVICE_MAX_MEM_ALLOC_SIZE , sizeof(cl_ulong), (void *)&cgpu->max_alloc, NULL);
 	if (status != CL_SUCCESS) {
@@ -436,30 +447,40 @@ _clState *initCl(unsigned int gpu, char *name, size_t nameSize)
 	else if (preferred_vwidth > 2)
 		preferred_vwidth = 2;
 
-	switch (clState->chosen_kernel) {
-		case KL_POCLBM:
-			strcpy(filename, POCLBM_KERNNAME".cl");
-			strcpy(binaryfilename, POCLBM_KERNNAME);
-			break;
-		case KL_PHATK:
-			strcpy(filename, PHATK_KERNNAME".cl");
-			strcpy(binaryfilename, PHATK_KERNNAME);
-			break;
-		case KL_DIAKGCN:
-			strcpy(filename, DIAKGCN_KERNNAME".cl");
-			strcpy(binaryfilename, DIAKGCN_KERNNAME);
-			break;
-		case KL_SCRYPT:
-			strcpy(filename, SCRYPT_KERNNAME".cl");
-			strcpy(binaryfilename, SCRYPT_KERNNAME);
-			/* Scrypt only supports vector 1 */
+	if (cgpu->cl_filename) {
+		strcpy(filename, cgpu->cl_filename);
+		strcat(filename, ".cl");
+		strcpy(binaryfilename, cgpu->cl_filename);
+		applog(LOG_WARNING, "GPU %d using cl_filename: %s", cgpu->device_id, filename);
+		/* Scrypt only supports vector 1 */
+		if ((clState->chosen_kernel) == KL_SCRYPT)
 			cgpu->vwidth = 1;
-			break;
-		case KL_NONE: /* Shouldn't happen */
-		case KL_DIABLO:
-			strcpy(filename, DIABLO_KERNNAME".cl");
-			strcpy(binaryfilename, DIABLO_KERNNAME);
-			break;
+	} else {
+		switch (clState->chosen_kernel) {
+			case KL_POCLBM:
+				strcpy(filename, POCLBM_KERNNAME".cl");
+				strcpy(binaryfilename, POCLBM_KERNNAME);
+				break;
+			case KL_PHATK:
+				strcpy(filename, PHATK_KERNNAME".cl");
+				strcpy(binaryfilename, PHATK_KERNNAME);
+				break;
+			case KL_DIAKGCN:
+				strcpy(filename, DIAKGCN_KERNNAME".cl");
+				strcpy(binaryfilename, DIAKGCN_KERNNAME);
+				break;
+			case KL_SCRYPT:
+				strcpy(filename, SCRYPT_KERNNAME".cl");
+				strcpy(binaryfilename, SCRYPT_KERNNAME);
+				/* Scrypt only supports vector 1 */
+				cgpu->vwidth = 1;
+				break;
+			case KL_NONE: /* Shouldn't happen */
+			case KL_DIABLO:
+				strcpy(filename, DIABLO_KERNNAME".cl");
+				strcpy(binaryfilename, DIABLO_KERNNAME);
+				break;
+		}
 	}
 
 	if (cgpu->vwidth)

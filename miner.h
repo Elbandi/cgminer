@@ -327,6 +327,7 @@ struct gpu_adl {
 
 	int gpu;
 	bool has_fanspeed;
+	int max_fanspeed_pct;
 	struct gpu_adl *twin;
 };
 #endif
@@ -523,10 +524,13 @@ struct cgpu_info {
 
 	const char *kname;
 #ifdef HAVE_OPENCL
+	char *cl_filename;
 	bool mapped;
 	int virtual_gpu;
 	int virtual_adl;
 	int intensity;
+	int xintensity;
+	int rawintensity;
 	bool dynamic;
 
 	cl_uint vwidth;
@@ -560,6 +564,8 @@ struct cgpu_info {
 	int gpu_memdiff;
 	int gpu_powertune;
 	float gpu_vddc;
+	int gpu_engine_exit;
+	int gpu_memclock_exit;
 #endif
 	int diff1;
 	double diff_accepted;
@@ -1126,6 +1132,8 @@ extern void api(int thr_id);
 extern struct pool *current_pool(void);
 extern int enabled_pools;
 extern void get_intrange(char *arg, int *val1, int *val2);
+extern void get_intexitval(char *arg, int *val1, int *val2);
+extern void get_intrangeexitval(char *arg, int *val1, int *val2, int *val3);
 extern bool detect_stratum(struct pool *pool, char *url);
 extern void print_summary(void);
 extern void adjust_quota_gcd(void);
@@ -1141,8 +1149,16 @@ extern bool add_pool_details(struct pool *pool, bool live, char *url, char *user
 #define MAX_SHA_INTENSITY_STR "14"
 #define MIN_SCRYPT_INTENSITY 8
 #define MIN_SCRYPT_INTENSITY_STR "8"
-#define MAX_SCRYPT_INTENSITY 20
-#define MAX_SCRYPT_INTENSITY_STR "20"
+#define MAX_SCRYPT_INTENSITY 25
+#define MAX_SCRYPT_INTENSITY_STR "25"
+#define MIN_XINTENSITY 1
+#define MIN_XINTENSITY_STR "1"
+#define MAX_XINTENSITY 9999
+#define MAX_XINTENSITY_STR "9999"
+#define MIN_RAWINTENSITY 1
+#define MIN_RAWINTENSITY_STR "1"
+#define MAX_RAWINTENSITY 2147483647
+#define MAX_RAWINTENSITY_STR "2147483647"
 #ifdef USE_SCRYPT
 #define MIN_INTENSITY (opt_scrypt ? MIN_SCRYPT_INTENSITY : MIN_SHA_INTENSITY)
 #define MIN_INTENSITY_STR (opt_scrypt ? MIN_SCRYPT_INTENSITY_STR : MIN_SHA_INTENSITY_STR)
@@ -1270,6 +1286,7 @@ struct stratum_work {
 
 struct pool {
 	int pool_no;
+	char *poolname;
 	int prio;
 	int accepted, rejected;
 	int seq_rejects;
@@ -1281,6 +1298,7 @@ struct pool {
 	int quota_gcd;
 	int quota_used;
 	int works;
+	double last_block_diff;
 
 	double diff_accepted;
 	double diff_rejected;
@@ -1303,6 +1321,7 @@ struct pool {
 	unsigned int discarded_work;
 	unsigned int getfail_occasions;
 	unsigned int remotefail_occasions;
+	unsigned int disconnect_occasions;
 	struct timeval tv_idle;
 
 	double utility;
