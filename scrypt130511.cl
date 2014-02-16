@@ -783,26 +783,42 @@ void scrypt_core(uint4 X[8], __global uint4*restrict lookup)
 #endif
 	for (uint i=0; i<1024; ++i) 
 	{
-		uint4 V[8];
 		uint j = X[7].x & K[85];
 		uint y = (j/LOOKUP_GAP);
+#if (LOOKUP_GAP == 1)
+#pragma unroll
+		for(uint z=0; z<zSIZE; ++z)
+			X[z] ^= lookup[CO];
+#elif (LOOKUP_GAP == 2)
+		if (j&1)
+		{
+			uint4 V[8];
+#pragma unroll
+			for(uint z=0; z<zSIZE; ++z)
+				V[z] = lookup[CO];
+			salsa(V);
+#pragma unroll
+			for(uint z=0; z<zSIZE; ++z)
+				X[z] ^= V[z];
+		} else {
+#pragma unroll
+			for(uint z=0; z<zSIZE; ++z)
+				X[z] ^= lookup[CO];
+		}
+#else
+		uint4 V[8];
 #pragma unroll
 		for(uint z=0; z<zSIZE; ++z)
 			V[z] = lookup[CO];
 
-#if (LOOKUP_GAP == 1)
-#elif (LOOKUP_GAP == 2)
-		if (j&1)
-			salsa(V);
-#else
 		uint val = j%LOOKUP_GAP;
 		for (uint z=0; z<val; ++z) 
 			salsa(V);
-#endif
-
 #pragma unroll
 		for(uint z=0; z<zSIZE; ++z)
 			X[z] ^= V[z];
+#endif
+
 		salsa(X);
 	}
 	unshittify(X);
